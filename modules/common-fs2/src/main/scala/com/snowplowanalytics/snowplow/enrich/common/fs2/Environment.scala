@@ -43,6 +43,7 @@ import com.snowplowanalytics.snowplow.enrich.common.fs2.config.{ConfigFile, Pars
 import com.snowplowanalytics.snowplow.enrich.common.fs2.config.io.{Concurrency, Telemetry => TelemetryConfig}
 import com.snowplowanalytics.snowplow.enrich.common.fs2.io.{Clients, Metrics}
 import com.snowplowanalytics.snowplow.enrich.common.fs2.io.Clients.Client
+import com.snowplowanalytics.snowplow.enrich.common.fs2.io.experimental.Metadata
 
 import scala.concurrent.ExecutionContext
 import com.snowplowanalytics.snowplow.enrich.common.fs2.config.io.Input.Kinesis
@@ -69,6 +70,7 @@ import com.snowplowanalytics.snowplow.enrich.common.fs2.config.io.Input.Kinesis
  * @param getPayload          function that extracts the collector payload bytes from a record
  * @param sentry              optional sentry client
  * @param metrics             common counters
+ * @param metadata            metadata aggregations
  * @param assetsUpdatePeriod  time after which enrich assets should be refresh
  * @param goodAttributes      fields from an enriched event to use as output message attributes
  * @param piiAttributes       fields from a PII event to use as output message attributes
@@ -98,6 +100,7 @@ final case class Environment[F[_], A](
   getPayload: A => Array[Byte],
   sentry: Option[SentryClient],
   metrics: Metrics[F],
+  metadata: Metadata[F],
   assetsUpdatePeriod: Option[FiniteDuration],
   goodAttributes: EnrichedEvent => Map[String, String],
   piiAttributes: EnrichedEvent => Map[String, String],
@@ -106,7 +109,8 @@ final case class Environment[F[_], A](
   streamsSettings: Environment.StreamsSettings,
   region: Option[String],
   cloud: Option[Telemetry.Cloud],
-  acceptInvalid: Boolean
+  acceptInvalid: Boolean,
+  preShutdown: Option[() => F[Unit]]
 )
 
 object Environment {
@@ -162,6 +166,7 @@ object Environment {
       clts = Clients.init[F](http, clients)
       igluClient <- IgluClient.parseDefault[F](parsedConfigs.igluJson).resource
       metrics <- Resource.eval(metricsReporter[F](blocker, file))
+      metadata <- Resource.eval(metadataReporter[F](file, processor.artifact, http))
       assets = parsedConfigs.enrichmentConfigs.flatMap(_.filesToCache)
       sem <- Resource.eval(Semaphore(1L))
       assetsState <- Resource.eval(Assets.State.make[F](blocker, sem, clts, assets))
@@ -186,6 +191,7 @@ object Environment {
       getPayload,
       sentry,
       metrics,
+      metadata,
       file.assetsUpdatePeriod,
       parsedConfigs.goodAttributes,
       parsedConfigs.piiAttributes,
@@ -194,12 +200,23 @@ object Environment {
       StreamsSettings(file.concurrency, maxRecordSize),
       getRegionFromConfig(file).orElse(getRegion),
       cloud,
-      acceptInvalid
+      acceptInvalid,
+      Some(() => metadata.submit.compile.drain)
     )
   }
 
   private def metricsReporter[F[_]: ConcurrentEffect: ContextShift: Timer](blocker: Blocker, config: ConfigFile): F[Metrics[F]] =
     config.monitoring.flatMap(_.metrics).map(Metrics.build[F](blocker, _)).getOrElse(Metrics.noop[F].pure[F])
+
+  private def metadataReporter[F[_]: ConcurrentEffect: ContextShift: Timer](
+    config: ConfigFile,
+    appName: String,
+    httpClient: HttpClient[F]
+  ): F[Metadata[F]] =
+    config.experimental
+      .flatMap(_.metadata)
+      .map(metadataConfig => Metadata.build[F](metadataConfig, Metadata.HttpMetadataReporter[F](metadataConfig, appName, httpClient)))
+      .getOrElse(Metadata.noop[F].pure[F])
 
   private implicit class EitherTOps[F[_], E: Show, A](eitherT: EitherT[F, E, A]) {
     def resource(implicit F: Sync[F]): Resource[F, A] = {
