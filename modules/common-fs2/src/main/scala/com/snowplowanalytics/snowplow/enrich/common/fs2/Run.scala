@@ -163,7 +163,7 @@ object Run {
   ): F[ExitCode] =
     environment.use { env =>
       val log = Logger[F].info("Running enrichment stream")
-      val enrich = Enrich.run[F, A](env)
+      val enrich = Enrich.run[F, A](env, env.blocker)
       val updates = Assets.run[F, A](env.blocker, env.semaphore, env.assetsUpdatePeriod, env.assetsState, env.enrichments)
       val telemetry = Telemetry.run[F, A](env)
       val reporting = env.metrics.report

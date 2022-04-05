@@ -113,7 +113,7 @@ final case class Environment[F[_], A](
   region: Option[String],
   cloud: Option[Telemetry.Cloud],
   acceptInvalid: Boolean,
-  preShutdown: Option[() => F[Unit]]
+  preShutdown: Option[F[Unit]]
 )
 
 object Environment {
@@ -204,7 +204,7 @@ object Environment {
       getRegionFromConfig(file).orElse(getRegion),
       cloud,
       acceptInvalid,
-      Some(() => metadata.submit.compile.drain)
+      Some(metadata.submit.compile.drain)
     )
   }
 

@@ -50,6 +50,7 @@ import com.snowplowanalytics.snowplow.enrich.common.adapters.AdapterRegistry
 import com.snowplowanalytics.snowplow.enrich.common.loaders.{CollectorPayload, ThriftLoader}
 import com.snowplowanalytics.snowplow.enrich.common.enrichments.EnrichmentRegistry
 import com.snowplowanalytics.snowplow.enrich.common.utils.ConversionUtils
+import cats.effect.Blocker
 
 object Enrich {
 
@@ -68,7 +69,7 @@ object Enrich {
    * [[Environment]] initialisation, then if `assetsUpdatePeriod` has been specified -
    * they'll be refreshed periodically by [[Assets.updateStream]]
    */
-  def run[F[_]: Concurrent: ContextShift: Clock: Parallel: Timer, A](env: Environment[F, A]): Stream[F, Unit] = {
+  def run[F[_]: Concurrent: ContextShift: Clock: Parallel: Timer, A](env: Environment[F, A], blocker: Blocker): Stream[F, Unit] = {
     val registry: F[EnrichmentRegistry[F]] = env.enrichments.get.map(_.registry)
     val enrich: Enrich[F] = {
       implicit val rl: RegistryLookup[F] = env.registryLookup
@@ -90,7 +91,7 @@ object Enrich {
       _.parEvalMap(env.streamsSettings.concurrency.sink)(sinkChunk(_, sinkOne(env), env.metrics.enrichLatency))
         .evalMap(env.checkpoint)
 
-    Stream.eval(runWithShutdown(enriched, sinkAndCheckpoint, env.preShutdown.getOrElse(() => Sync[F].unit)))
+    Stream.eval(runWithShutdown(enriched, sinkAndCheckpoint, blocker, env.preShutdown.getOrElse(Sync[F].unit)))
   }
 
   /**
@@ -260,10 +261,11 @@ object Enrich {
    * We must not terminate the source any earlier, because this would shutdown the kinesis scheduler too early,
    * and then we would not be able to checkpoint the outstanding records.
    */
-  private def runWithShutdown[F[_]: Concurrent: Sync: Timer, A](
+  private def runWithShutdown[F[_]: Concurrent: ContextShift: Sync: Timer, A](
     enriched: Stream[F, List[(A, Result)]],
     sinkAndCheckpoint: Pipe[F, List[(A, Result)], Unit],
-    preShutdown: () => F[Unit]
+    blocker: Blocker,
+    preShutdown: F[Unit]
   ): F[Unit] =
     Queue.synchronousNoneTerminated[F, List[(A, Result)]].flatMap { queue =>
       queue.dequeue
@@ -275,16 +277,16 @@ object Enrich {
         .bracketCase(_.join) {
           case (_, ExitCase.Completed) =>
             // The source has completed "naturally", e.g. processed all input files in the directory
-            preShutdown()
+            blocker.delay(preShutdown) *> Sync[F].unit
           case (fiber, ExitCase.Canceled) =>
             // SIGINT received. We wait for the enriched events already in the queue to get sunk and checkpointed
-            preShutdown() *> terminateStream(queue, fiber)
+            blocker.delay(preShutdown) *> terminateStream(queue, fiber)
           case (fiber, ExitCase.Error(e)) =>
             // Runtime exception in the stream of enriched events.
             // We wait for the enriched events already in the queue to get sunk and checkpointed.
             // We then raise the original exception
             Logger[F].error(e)("Unexpected error in enrich") *>
-              preShutdown() *> terminateStream(queue, fiber).handleErrorWith { e2 =>
+              blocker.delay(preShutdown) *> terminateStream(queue, fiber).handleErrorWith { e2 =>
               Logger[F].error(e2)("Error when terminating the stream")
             } *> Sync[F].raiseError(e)
         }
