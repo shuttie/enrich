@@ -23,11 +23,11 @@ import com.snowplowanalytics.snowplow.enrich.common.fs2.io.experimental.Metadata
 object Aggregates {
   def init[F[_]: Sync] = Ref.of[F, Map[MetadataEvent, Set[SchemaKey]]](Map.empty)
 
-  def metadata[F[_]](ref: Ref[F, Map[MetadataEvent, Set[SchemaKey]]]): Metadata[F] =
+  def metadata[F[_]: Sync](ref: Ref[F, Map[MetadataEvent, Set[SchemaKey]]]): Metadata[F] =
     new Metadata[F] {
       def report: Stream[F, Unit] = Stream.empty.covary[F]
-      def submit: Stream[F, Unit] = Stream.empty.covary[F]
       def observe(event: EnrichedEvent): F[Unit] =
         ref.update(Metadata.recalculate(_, event))
+      def flush: F[Unit] = Sync[F].unit
     }
 }

@@ -45,7 +45,7 @@ import com.snowplowanalytics.snowplow.enrich.common.outputs.EnrichedEvent
  */
 trait Metadata[F[_]] {
   def report: Stream[F, Unit]
-  def submit: Stream[F, Unit]
+  def flush: F[Unit]
   def observe(event: EnrichedEvent): F[Unit]
 }
 
@@ -65,16 +65,18 @@ object Metadata {
           for {
             _ <- Stream.eval(Logger[F].info("Starting metadata repoter"))
             _ <- Stream.fixedDelay[F](config.interval)
-            _ <- submit
-          } yield ()
-
-        def submit: Stream[F, Unit] =
-          for {
             snapshot <- Stream.eval(MetadataEventsRef.snapshot(observedRef))
             _ <- Stream
                    .emits[F, MetadataEvent](snapshot.eventsToEntities.keySet.toSeq)
                    .evalMap[F, Unit](reporter.report(snapshot.periodStart, snapshot.periodEnd)(_, snapshot.eventsToEntities))
           } yield ()
+
+        def flush: F[Unit] =
+          MetadataEventsRef.snapshot(observedRef).flatMap { snapshot =>
+            snapshot.eventsToEntities.keySet.toList.traverse { event =>
+              reporter.report(snapshot.periodStart, snapshot.periodEnd)(event, snapshot.eventsToEntities)
+            }
+          } *> Sync[F].unit
 
         def observe(event: EnrichedEvent): F[Unit] =
           observedRef.eventsToEntities.update(recalculate(_, event))
@@ -84,8 +86,8 @@ object Metadata {
   def noop[F[_]: Async]: Metadata[F] =
     new Metadata[F] {
       def report: Stream[F, Unit] = Stream.never[F]
-      def submit: Stream[F, Unit] = Stream.never[F]
       def observe(event: EnrichedEvent): F[Unit] = Applicative[F].unit
+      def flush: F[Unit] = Sync[F].unit
     }
 
   trait MetadataReporter[F[_]] {
