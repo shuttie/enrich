@@ -130,7 +130,11 @@ lazy val kinesis = project
   .in(file("modules/kinesis"))
   .enablePlugins(BuildInfoPlugin, JavaAppPackaging, DockerPlugin)
   .settings(kinesisBuildSettings)
-  .settings(libraryDependencies ++= kinesisDependencies)
+  .settings(libraryDependencies ++= (kinesisDependencies) ++ Seq(
+      // integration test dependencies
+      specs2CEIt,
+      specs2ScalacheckIt
+  ))
   .settings(excludeDependencies ++= exclusions)
   .settings(addCompilerPlugin(betterMonadicFor))
   .settings(Defaults.itSettings)

@@ -324,9 +324,7 @@ object Dependencies {
       dynamodbSdk,
       fs2BlobS3,
       fs2Aws,
-      sts,
-      specs2CEIt,
-      specs2ScalacheckIt
+      sts
     )
 
     // exclusions
