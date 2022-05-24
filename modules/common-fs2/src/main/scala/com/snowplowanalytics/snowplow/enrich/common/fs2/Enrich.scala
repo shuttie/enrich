@@ -98,7 +98,7 @@ object Enrich {
           begin <- Clock[F].realTime(TimeUnit.MILLISECONDS)
           result <- sinkChunk(chunk, sinkOne(env), env.metrics.enrichLatency)
           end <- Clock[F].realTime(TimeUnit.MILLISECONDS)
-          _ <- Logger[F].debug(s"Chunk of size ${chunk.size} enriched in ${end - begin} ms")
+          _ <- Logger[F].debug(s"Chunk of size ${chunk.size} sunk in ${end - begin} ms")
         } yield result
       )
         .evalMap(env.checkpoint)
