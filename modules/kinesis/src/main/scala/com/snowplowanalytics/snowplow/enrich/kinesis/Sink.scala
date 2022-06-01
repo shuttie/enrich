@@ -93,6 +93,7 @@ object Sink {
       .setMaxConnections(config.maxConnections)
       .setLogLevel(config.logLevel)
       .setRecordTtl(config.recordTtl.toMillis)
+      .setRateLimit(100L)
 
     // See https://docs.aws.amazon.com/streams/latest/dev/kinesis-kpl-concepts.html
     val withAggregation = config.aggregation match {
