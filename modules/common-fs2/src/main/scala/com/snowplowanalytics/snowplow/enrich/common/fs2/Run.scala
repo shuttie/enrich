@@ -149,7 +149,7 @@ object Run {
   ): Resource[F, AttributedByteSink[F]] =
     output match {
       case f: Output.FileSystem =>
-        Sink.fileSink[F](f, blocker).map(sink => row => sink(row.data))
+        Sink.fileSink[F](f, blocker).map(sink => list => sink(list.map(_.data)))
       case _ =>
         mkSinkGood(blocker, output, monitoring)
     }

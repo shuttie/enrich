@@ -21,8 +21,10 @@ import scala.concurrent.duration._
 
 import org.joda.time.DateTime
 
-import cats.data.{NonEmptyList, Validated, ValidatedNel}
-import cats.{Monad, Parallel}
+//import cats.data.{NonEmptyList, Validated, ValidatedNel}
+//import cats.{Monad, Parallel}
+import cats.data.{NonEmptyList, ValidatedNel}
+import cats.Parallel
 import cats.implicits._
 
 import cats.effect.{Clock, Concurrent, ContextShift, ExitCase, Fiber, Sync, Timer}
@@ -96,7 +98,7 @@ object Enrich {
       _.parEvalMap(env.streamsSettings.concurrency.sink)(chunk =>
         for {
           begin <- Clock[F].realTime(TimeUnit.MILLISECONDS)
-          result <- sinkChunk(chunk, sinkOne(env), env.metrics.enrichLatency)
+          result <- sinkChunk(chunk, env)//sinkOne(env), env.metrics.enrichLatency)
           end <- Clock[F].realTime(TimeUnit.MILLISECONDS)
           _ <- Logger[F].debug(s"Chunk of size ${chunk.size} sunk in ${end - begin} ms")
         } yield result
@@ -180,42 +182,32 @@ object Enrich {
     BadRow.GenericError(processor, failure, rawPayload)
   }
 
-  def sinkChunk[F[_]: Concurrent: Parallel, B](
+  def sinkChunk[F[_]: Concurrent: Parallel, A, B](
     chunk: List[(B, Result)],
-    sinkOne: Validated[BadRow, EnrichedEvent] => F[Unit],
-    trackLatency: Option[Long] => F[Unit]
-  ): F[List[B]] =
-    chunk.parTraverse {
-      case (record, result) =>
-        val (events, collectorTstamp) = result
-        events.parTraverse_(one => sinkOne(one)).as(record) <* trackLatency(collectorTstamp)
-    }
+    env: Environment[F, A]
+    //sinkOne: Validated[BadRow, EnrichedEvent] => F[Unit],
+    //trackLatency: Option[Long] => F[Unit]
+  ): F[List[B]] = {
+    val records = chunk.map(_._1)
+    
+    val (bad, good) =
+      chunk
+        .flatMap(_._2._1)
+        .map(_.toEither)
+        .separate
 
-  def sinkOne[F[_]: Concurrent: Parallel, A](env: Environment[F, A])(result: Validated[BadRow, EnrichedEvent]): F[Unit] =
-    result.fold(sinkBad(env, _), sinkGood(env, _))
+    val (moreBad, serialized) =
+      good
+        .map { enriched => 
+          serializeEnriched(enriched, env.processor, env.streamsSettings.maxRecordSize)
+            .map(AttributedData(_, env.goodAttributes(enriched)))
+        }
+        .separate
 
-  def sinkBad[F[_]: Monad, A](env: Environment[F, A], bad: BadRow): F[Unit] =
-    env.metrics.badCount >> env.sinkBad(badRowResize(env, bad))
+    val allBad = (bad ++ moreBad).map(badRowResize(env, _))
 
-  def sinkGood[F[_]: Concurrent: Parallel, A](env: Environment[F, A], enriched: EnrichedEvent): F[Unit] =
-    serializeEnriched(enriched, env.processor, env.streamsSettings.maxRecordSize) match {
-      case Left(br) => sinkBad(env, br)
-      case Right(bytes) =>
-        List(env.metrics.goodCount,
-             env.metadata.observe(enriched),
-             env.sinkGood(AttributedData(bytes, env.goodAttributes(enriched))),
-             sinkPii(env, enriched)
-        ).parSequence_
-    }
-
-  def sinkPii[F[_]: Monad, A](env: Environment[F, A], enriched: EnrichedEvent): F[Unit] =
-    (for {
-      sink <- env.sinkPii
-      pii <- ConversionUtils.getPiiEvent(env.processor, enriched)
-    } yield serializeEnriched(pii, env.processor, env.streamsSettings.maxRecordSize) match {
-      case Left(br) => sinkBad(env, br)
-      case Right(bytes) => sink(AttributedData(bytes, env.piiAttributes(pii)))
-    }).getOrElse(Monad[F].unit)
+    env.sinkGood(serialized).as(records) <* env.sinkBad(allBad)
+  }
 
   def serializeEnriched(
     enriched: EnrichedEvent,

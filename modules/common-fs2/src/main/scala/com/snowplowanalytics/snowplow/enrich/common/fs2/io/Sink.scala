@@ -39,11 +39,13 @@ object Sink {
     for {
       channel <- makeChannel(blocker, path)
       sem <- Resource.eval(Semaphore(1L))
-    } yield { bytes =>
+    } yield { records =>
       sem.withPermit {
         blocker.delay {
-          channel.write(ByteBuffer.wrap(bytes))
-          channel.write(ByteBuffer.wrap(Array('\n'.toByte)))
+          records.foreach { bytes =>
+            channel.write(ByteBuffer.wrap(bytes))
+            channel.write(ByteBuffer.wrap(Array('\n'.toByte)))
+          }
         }.void
       }
     }
@@ -61,14 +63,16 @@ object Sink {
       (hs, first) <- Hotswap(makeFile(blocker, 1, path))
       ref <- Resource.eval(Ref.of(first))
       sem <- Resource.eval(Semaphore(1L))
-    } yield { bytes =>
+    } yield { records =>
       sem.withPermit {
-        for {
-          state <- ref.get
-          state <- maybeRotate(blocker, hs, path, state, maxBytes, bytes.size)
-          state <- writeLine(blocker, state, bytes)
-          _ <- ref.set(state)
-        } yield ()
+        records.traverse_ { bytes =>
+          for {
+            state <- ref.get
+            state <- maybeRotate(blocker, hs, path, state, maxBytes, bytes.size)
+            state <- writeLine(blocker, state, bytes)
+            _ <- ref.set(state)
+          } yield ()
+        }
       }
     }
 
