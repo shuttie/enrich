@@ -519,7 +519,9 @@ class IgluUtilsSpec extends Specification with ValidatedMatchers {
 
       val csd = parse(clientSessionData).getOrElse("")
 
-      IgluUtils.extractAndValidateInputJsons(input, SpecHelpers.client, raw, processor).value must beRight((List(SelfDescribingData(clientSessionSchema, csd)), None))
+      IgluUtils.extractAndValidateInputJsons(input, SpecHelpers.client, raw, processor).value must beRight(
+        (List(SelfDescribingData(clientSessionSchema, csd)), None)
+      )
     }
   }
 
