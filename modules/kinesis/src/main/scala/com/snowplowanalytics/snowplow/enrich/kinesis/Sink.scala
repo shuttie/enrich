@@ -18,7 +18,7 @@ import scala.collection.JavaConverters._
 
 import cats.implicits._
 
-import cats.effect.{Concurrent, ContextShift, Resource, Sync, Timer}
+import cats.effect.{Blocker, Concurrent, ContextShift, Resource, Sync, Timer}
 
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
@@ -42,6 +42,7 @@ object Sink {
     Slf4jLogger.getLogger[F]
 
   def init[F[_]: Concurrent: ContextShift: Timer](
+    blocker: Blocker,
     output: Output,
     monitoring: Monitoring
   ): Resource[F, ByteSink[F]] =
@@ -52,7 +53,7 @@ object Sink {
             for {
               producer <- Resource.pure[F, AmazonKinesis](mkProducer(o, region))
               _ <- Resource.pure[F, Monitoring](monitoring)
-            } yield records => records.grouped(o.collection.maxCount.toInt).toList.traverse_(g => writeToKinesis(o, producer, toKinesisRecords(g.map(AttributedData(_, Map.empty)))))
+            } yield records => records.grouped(o.collection.maxCount.toInt).toList.traverse_(g => writeToKinesis(blocker, o, producer, toKinesisRecords(g.map(AttributedData(_, Map.empty)))))
           case None =>
             Resource.eval(Sync[F].raiseError(new RuntimeException(s"Region not found in the config and in the runtime")))
         }
@@ -61,6 +62,7 @@ object Sink {
     }
 
   def initAttributed[F[_]: Concurrent: ContextShift: Timer](
+    blocker: Blocker,
     output: Output,
     monitoring: Monitoring
   ): Resource[F, AttributedByteSink[F]] =
@@ -71,7 +73,7 @@ object Sink {
             for {
               producer <- Resource.pure[F, AmazonKinesis](mkProducer(o, region))
               _ <- Resource.pure[F, Monitoring](monitoring)
-            } yield records => records.grouped(o.collection.maxCount.toInt).toList.traverse_(g => writeToKinesis(o, producer, toKinesisRecords(g)))
+            } yield records => records.grouped(o.collection.maxCount.toInt).toList.traverse_(g => writeToKinesis(blocker, o, producer, toKinesisRecords(g)))
           case None =>
             Resource.eval(Sync[F].raiseError(new RuntimeException(s"Region not found in the config and in the runtime")))
         }
@@ -100,6 +102,7 @@ object Sink {
   }
 
   private def writeToKinesis[F[_]: ContextShift: Sync: Timer](
+    blocker: Blocker,
     config: Output.Kinesis,
     kinesis: AmazonKinesis,
     records: List[KinesisRecord]
@@ -107,8 +110,7 @@ object Sink {
     val retryPolicy = capDelay[F](config.backoffPolicy.maxBackoff, fullJitter[F](config.backoffPolicy.minBackoff))
       .join(limitRetries(config.backoffPolicy.maxRetries))
   
-    // TODO: use blocker
-    val withoutRetry = Sync[F].delay(putRecords(kinesis, config.streamName, records))
+    val withoutRetry = blocker.blockOn(Sync[F].delay(putRecords(kinesis, config.streamName, records)))
 
     val withRetry = 
       withoutRetry.retryingOnAllErrors(
@@ -127,7 +129,7 @@ object Sink {
         else {
           val failurePairs = records.zip(putRecordsResult.getRecords.asScala).filter(_._2.getErrorMessage != null)
           val (failedRecords, failedResults) = failurePairs.unzip
-          logErrorsSummary(getErrorsSummary(failedResults)) *> writeToKinesis(config, kinesis, failedRecords)
+          logErrorsSummary(getErrorsSummary(failedResults)) *> writeToKinesis(blocker, config, kinesis, failedRecords)
         }
     } yield failuresRetried
   }
