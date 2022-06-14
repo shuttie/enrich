@@ -17,6 +17,7 @@ import java.util.UUID
 import scala.collection.JavaConverters._
 
 import cats.implicits._
+import cats.Parallel
 
 import cats.effect.{Blocker, Concurrent, ContextShift, Resource, Sync, Timer}
 
@@ -61,7 +62,7 @@ object Sink {
         Resource.eval(Sync[F].raiseError(new IllegalArgumentException(s"Output $o is not Kinesis")))
     }
 
-  def initAttributed[F[_]: Concurrent: ContextShift: Timer](
+  def initAttributed[F[_]: Concurrent: ContextShift: Parallel: Timer](
     blocker: Blocker,
     output: Output,
     monitoring: Monitoring
@@ -73,7 +74,7 @@ object Sink {
             for {
               producer <- Resource.pure[F, AmazonKinesis](mkProducer(o, region))
               _ <- Resource.pure[F, Monitoring](monitoring)
-            } yield records => records.grouped(o.collection.maxCount.toInt).toList.traverse_(g => writeToKinesis(blocker, o, producer, toKinesisRecords(g)))
+            } yield records => records.grouped(o.collection.maxCount.toInt).toList.parTraverse_(g => writeToKinesis(blocker, o, producer, toKinesisRecords(g)))
           case None =>
             Resource.eval(Sync[F].raiseError(new RuntimeException(s"Region not found in the config and in the runtime")))
         }
