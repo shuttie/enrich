@@ -206,7 +206,7 @@ object Enrich {
 
     val allBad = (bad ++ moreBad).map(badRowResize(env, _))
 
-    env.sinkGood(serialized).as(records) <* env.sinkBad(allBad)
+    List(env.sinkGood(serialized), env.sinkBad(allBad)).parSequence_.as(records)
   }
 
   def serializeEnriched(
